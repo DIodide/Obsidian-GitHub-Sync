@@ -18,6 +18,7 @@ interface GHSyncSettings {
 	checkStatusOnLoad: boolean;
 	noticeLevel: NoticeLevelSetting;
 	showSyncSuccessNotice: boolean;
+	additionalRepoPaths: string;
 }
 
 const DEFAULT_SETTINGS: GHSyncSettings = {
@@ -28,6 +29,7 @@ const DEFAULT_SETTINGS: GHSyncSettings = {
 	checkStatusOnLoad: true,
 	noticeLevel: 'ALL',
 	showSyncSuccessNotice: true,
+	additionalRepoPaths: '',
 }
 
 
@@ -56,15 +58,122 @@ export default class GHSyncPlugin extends Plugin {
 		new Notice(text, timeout);
 	}
 
-	private showSyncSuccessNotice(): void {
+	private showSyncSuccessNotice(extraRepoCount: number): void {
 		if (!this.settings.showSyncSuccessNotice) {
 			return;
 		}
 
-		this.showNotice('github sync successful', 'INFO');
+		const suffix = extraRepoCount > 0 ? ` (vault + ${extraRepoCount} extra repo${extraRepoCount > 1 ? 's' : ''})` : '';
+		this.showNotice('github sync successful' + suffix, 'INFO');
 	}
 
-	async SyncNotes()
+	// Expand ~ and vault-relative paths, then resolve symlinks so a repo
+	// reachable through a symlinked folder inside the vault (e.g.
+	// "#information") syncs at its real location.
+	private expandRepoPath(rawPath: string): string | null {
+		const fs = require('fs');
+		const path = require('path');
+		const os = require('os');
+
+		let p = rawPath.trim();
+		if (p.length === 0) {
+			return null;
+		}
+		if (p === '~' || p.startsWith('~/')) {
+			p = path.join(os.homedir(), p.slice(1));
+		}
+		if (!path.isAbsolute(p)) {
+			//@ts-ignore
+			p = path.join(this.app.vault.adapter.getBasePath(), p);
+		}
+		try {
+			return fs.realpathSync(p);
+		} catch (e) {
+			this.showNotice(`GitHub Sync: additional repo path not found: ${rawPath}`, 'ERROR', 10000);
+			return null;
+		}
+	}
+
+	private getAdditionalRepoPaths(): string[] {
+		return this.settings.additionalRepoPaths
+			.split('\n')
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0 && !line.startsWith('#'));
+	}
+
+	// Sync one additional repository: add everything, commit, pull origin
+	// main, push origin main. The repo's existing origin remote is used as
+	// is. Returns true on success.
+	async SyncAdditionalRepo(rawPath: string): Promise<boolean>
+	{
+		const repoPath = this.expandRepoPath(rawPath);
+		if (!repoPath) {
+			return false;
+		}
+
+		const repoGit: SimpleGit = simpleGit({
+			baseDir: repoPath,
+			binary: this.settings.gitLocation + "git",
+			maxConcurrentProcesses: 6,
+			trimmed: false,
+		});
+
+		const statusResult = await repoGit.status().catch(() => {
+			this.showNotice(`GitHub Sync: ${rawPath} is not a Git repo or git binary cannot be found.`, 'ERROR', 10000);
+			return null;
+		});
+		if (!statusResult) {
+			return false;
+		}
+
+		const os = require("os");
+		const path = require("path");
+		const date = new Date();
+		const msg = os.hostname() + " " + date.getFullYear() + "-" + (date.getMonth() + 1) + "-" + date.getDate() + ":" + date.getHours() + ":" + date.getMinutes() + ":" + date.getSeconds() + " (" + path.basename(repoPath) + ")";
+
+		const clean = statusResult.isClean();
+		if (!clean) {
+			try {
+				await repoGit.add(["-A"]).commit(msg);
+			} catch (e) {
+				this.showNotice(e, 'ERROR', 10000);
+				return false;
+			}
+		}
+
+		try {
+			//@ts-ignore
+			await repoGit.pull('origin', 'main', { '--no-rebase': null });
+		} catch (e) {
+			const conflictStatus = await repoGit.status().catch(() => null);
+			if (conflictStatus && conflictStatus.conflicted.length > 0) {
+				let conflictMsg = `Merge conflicts in ${rawPath}:`;
+				for (const c of conflictStatus.conflicted) {
+					conflictMsg += "\n\t" + c;
+				}
+				conflictMsg += "\nResolve them in that repo, then sync again.";
+				this.showNotice(conflictMsg, 'WARNING');
+			} else {
+				this.showNotice(e, 'ERROR', 10000);
+			}
+			return false;
+		}
+
+		try {
+			const postPull = await repoGit.status();
+			if (!clean || postPull.ahead > 0) {
+				await repoGit.push('origin', 'main', ['-u']);
+			}
+		} catch (e) {
+			this.showNotice(e, 'ERROR', 10000);
+			return false;
+		}
+
+		return true;
+	}
+
+	// Upstream vault sync, unchanged in behavior. Returns true on success.
+	async SyncVault(): Promise<boolean>
 	{
 		const remote = this.settings.remoteURL.trim();
 
@@ -85,7 +194,7 @@ export default class GHSyncPlugin extends Plugin {
 			return; })
 
 		if (!statusResult) {
-			return;
+			return false;
 		}
 
 		//@ts-ignore
@@ -103,7 +212,7 @@ export default class GHSyncPlugin extends Plugin {
 		    		.commit(msg);
 		    } catch (e) {
 		    	this.showNotice(e, 'ERROR', 10000);
-		    	return;
+		    	return false;
 		    }
 		}
 
@@ -114,14 +223,14 @@ export default class GHSyncPlugin extends Plugin {
 		}
 		catch (e) {
 			this.showNotice(e, 'ERROR', 10000);
-			return;
+			return false;
 		}
 		// check if remote url valid by fetching
 		try {
 			await git.fetch();
 		} catch (e) {
 			this.showNotice(String(e) + "\nGitHub Sync: Invalid remote URL.", 'ERROR', 10000);
-			return;
+			return false;
 		}
 
 		// git pull origin main
@@ -132,7 +241,7 @@ export default class GHSyncPlugin extends Plugin {
 	    } catch (e) {
 	    	let conflictStatus = await git.status().catch((error) => { this.showNotice(error, 'ERROR', 10000); return; });
 	    	if (!conflictStatus) {
-	    		return;
+	    		return false;
 	    	}
     		let conflictMsg = "Merge conflicts in:";
 	    	//@ts-ignore
@@ -142,12 +251,12 @@ export default class GHSyncPlugin extends Plugin {
 			}
 			conflictMsg += "\nResolve them or click sync button again to push with unresolved conflicts."
 			this.showNotice(conflictMsg, 'WARNING');
-			//@ts-ignore	
+			//@ts-ignore
 			for (let c of conflictStatus.conflicted)
 			{
 				this.app.workspace.openLinkText("", c, true);
 			}
-	    	return;
+	    	return false;
 	    }
 
 		// resolve merge conflicts
@@ -157,11 +266,32 @@ export default class GHSyncPlugin extends Plugin {
 		    	await git.push('origin', 'main', ['-u']);
 		    } catch (e) {
 		    	this.showNotice(e, 'ERROR', 10000);
-		    	return;
+		    	return false;
 			}
 	    }
 
-		this.showSyncSuccessNotice();
+		return true;
+	}
+
+	async SyncNotes()
+	{
+		const vaultOk = await this.SyncVault();
+
+		// Sync any additional repositories (e.g. a knowledge repo reachable
+		// through a symlink inside the vault). Failures in one repo do not
+		// block the others.
+		let extraOk = 0;
+		const extraPaths = this.getAdditionalRepoPaths();
+		for (const p of extraPaths) {
+			const ok = await this.SyncAdditionalRepo(p);
+			if (ok) {
+				extraOk += 1;
+			}
+		}
+
+		if (vaultOk && extraOk === extraPaths.length) {
+			this.showSyncSuccessNotice(extraOk);
+		}
 	}
 
 	async CheckStatusOnStart()
@@ -234,7 +364,7 @@ export default class GHSyncPlugin extends Plugin {
 					//this.registerInterval(setInterval(this.SyncNotes, interval * 6 * 1000));
 					this.showNotice("Auto sync enabled", 'INFO');
 				} catch (e) {
-					
+
 				}
 			}
 		}
@@ -281,7 +411,7 @@ class GHSyncSettingTab extends PluginSettingTab {
 		howto.createEl("br");
         const linkEl = howto.createEl('p');
         linkEl.createEl('span', { text: 'See the ' });
-        linkEl.createEl('a', { href: 'https://github.com/kevinmkchin/Obsidian-GitHub-Sync/blob/main/README.md', text: 'README' });
+        linkEl.createEl('a', { href: 'https://github.com/DIodide/Obsidian-GitHub-Sync/blob/main/README.md', text: 'README' });
         linkEl.createEl('span', { text: ' for more information and troubleshooting.' });
 
 		new Setting(containerEl)
@@ -295,6 +425,18 @@ class GHSyncSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})
         	.inputEl.addClass('my-plugin-setting-text'));
+
+		new Setting(containerEl)
+			.setName('Additional repositories')
+			.setDesc('One path per line. Each is a separate git repository that is committed, pulled, and pushed to its own origin main whenever the vault syncs. Paths may be absolute, start with ~, or be vault-relative; symlinks (e.g. a linked folder inside the vault) are resolved to the real repository. Lines starting with # are ignored.')
+			.addTextArea(text => text
+				.setPlaceholder('~/information/portfolio')
+				.setValue(this.plugin.settings.additionalRepoPaths)
+				.onChange(async (value) => {
+					this.plugin.settings.additionalRepoPaths = value;
+					await this.plugin.saveSettings();
+				})
+        	.inputEl.addClass('my-plugin-setting-textarea'));
 
 		new Setting(containerEl)
 			.setName('git binary location')

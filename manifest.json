@@ -1,10 +1,10 @@
 {
 	"id": "github-sync",
-	"name": "GitHub Sync",
-	"version": "1.0.7",
+	"name": "GitHub Sync (Multi-Repo)",
+	"version": "2.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Sync vault to personal GitHub.",
-	"author": "Kevin Chin",
-	"authorUrl": "https://kevin.gd/",
+	"description": "Sync vault to personal GitHub, plus any additional git repositories (e.g. symlinked knowledge repos) to their own remotes.",
+	"author": "Kevin Chin (fork: Ibraheem Amin)",
+	"authorUrl": "https://github.com/DIodide/Obsidian-GitHub-Sync",
 	"isDesktopOnly": true
 }

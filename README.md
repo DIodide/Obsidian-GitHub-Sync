@@ -1,3 +1,23 @@
+# GitHub Sync (Multi-Repo fork)
+
+This is a fork of [kevinmkchin/Obsidian-GitHub-Sync](https://github.com/kevinmkchin/Obsidian-GitHub-Sync)
+that adds an **Additional repositories** setting: a list of paths (absolute,
+`~`-prefixed, or vault-relative; symlinks are resolved) to other git
+repositories that are committed, pulled, and pushed to their own `origin
+main` every time the vault syncs (manual, on-load, and interval syncs).
+
+Use case: a folder inside the vault is a symlink into a separate repo (for
+example `#information` -> `~/information`, whose `portfolio/` subfolder is
+its own GitHub repo). The vault repo gitignores the symlink, and this fork
+syncs that repo alongside the vault.
+
+Install manually: copy `main.js`, `manifest.json`, and `styles.css` into
+`<vault>/.obsidian/plugins/github-sync/`.
+
+Original README follows.
+
+---
+
 ### Changelog 1.0.7
 - Simplified the sync success notice so successful runs show a shorter confirmation message.
 

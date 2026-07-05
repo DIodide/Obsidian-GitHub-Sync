@@ -40,3 +40,8 @@ If your plugin does not need CSS, delete this file.
     width: 30em;
 }
 
+
+.my-plugin-setting-textarea {
+    width: 30em;
+    height: 6em;
+}
