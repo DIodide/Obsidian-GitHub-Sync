@@ -14,6 +14,15 @@ syncs that repo alongside the vault.
 Install manually: copy `main.js`, `manifest.json`, and `styles.css` into
 `<vault>/.obsidian/plugins/github-sync/`.
 
+### 2.0.1 sync reliability
+
+- Retry pending commits even when the working tree is clean, including repositories without upstream tracking.
+- Startup auto sync runs for the vault and every additional repository independently of the status-check setting.
+- Preserve origin tracking, report startup and pull errors, and distinguish unpushed commits from an up-to-date vault.
+- Serialize sync requests and stop the interval timer when the plugin unloads.
+
+Run `npm ci`, `npm test`, and `npm run build` to validate and build the plugin.
+
 Original README follows.
 
 ---
@@ -47,7 +56,7 @@ Simple plugin that allows you to sync your vault to a personal GitHub repo for *
 
 ## How to Use
 Click the **Sync with Remote** ribbon icon to pull changes from your GitHub repo and push local changes. 
-If there are any conflicts, the unmerged files will be opened for you to resolve (or just push again with the unresolved conflicts - that should work too).
+If a pull reports merge conflicts, resolve them before syncing again.
 
 ## Setup
 
