@@ -70,5 +70,8 @@ test('startup sync runs independently of status checking and covers extras',asyn
  p.settings.isSyncOnLoad=true; p.settings.checkStatusOnLoad=false; p.settings.syncinterval=0; p.settings.additionalRepoPaths=f.local;
  p.loadSettings=async()=>{}; p.addRibbonIcon=()=>({addClass(){}}); p.addCommand=()=>{}; p.addSettingTab=()=>{};
  p.SyncVault=async()=>{vault++;return true;}; p.SyncAdditionalRepo=async()=>{extra++;return true;};
- await p.onload(); assert.equal(vault,1); assert.equal(extra,1);
+ let ready;
+ p.app.workspace={onLayoutReady:(callback)=>{ready=callback;}};
+ await p.onload(); assert.equal(vault,0); assert.equal(extra,0);
+ ready(); await p.SyncNotes(); assert.equal(vault,1); assert.equal(extra,1);
 });

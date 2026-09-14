@@ -339,11 +339,14 @@ export default class GHSyncPlugin extends Plugin {
 			}
 		}
 
-		if (this.settings.isSyncOnLoad) {
-			await this.SyncNotes();
-		} else if (this.settings.checkStatusOnLoad) {
-			await this.CheckStatusOnStart();
-		}
+		// Do not hold up Obsidian's plugin-loading phase on Git/network work.
+		this.app.workspace.onLayoutReady(() => {
+			if (this.settings.isSyncOnLoad) {
+				void this.SyncNotes();
+			} else if (this.settings.checkStatusOnLoad) {
+				void this.CheckStatusOnStart();
+			}
+		});
 	}
 
 	onunload() {
