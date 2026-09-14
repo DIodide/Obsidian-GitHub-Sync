@@ -1,7 +1,7 @@
 {
 	"id": "github-sync",
 	"name": "GitHub Sync (Multi-Repo)",
-	"version": "2.0.0",
+	"version": "2.0.1",
 	"minAppVersion": "0.15.0",
 	"description": "Sync vault to personal GitHub, plus any additional git repositories (e.g. symlinked knowledge repos) to their own remotes.",
 	"author": "Kevin Chin (fork: Ibraheem Amin)",

@@ -3,7 +3,7 @@ import { simpleGit, SimpleGit, CleanOptions, SimpleGitOptions } from 'simple-git
 import { setIntervalAsync, clearIntervalAsync } from 'set-interval-async';
 
 let simpleGitOptions: Partial<SimpleGitOptions>;
-let git: SimpleGit;
+
 
 type NoticeLevelSetting = 'ALL' | 'WARNING' | 'ERROR';
 type LegacyNoticeLevelSetting = NoticeLevelSetting | 'WARNINGS';
@@ -36,6 +36,8 @@ const DEFAULT_SETTINGS: GHSyncSettings = {
 export default class GHSyncPlugin extends Plugin {
 
 	settings: GHSyncSettings;
+	private syncInFlight: Promise<void> | null = null;
+	private syncTimer: ReturnType<typeof setIntervalAsync> | null = null;
 
 	private shouldShowNotice(severity: NoticeSeverity): boolean {
 		switch (this.settings.noticeLevel) {
@@ -160,10 +162,7 @@ export default class GHSyncPlugin extends Plugin {
 		}
 
 		try {
-			const postPull = await repoGit.status();
-			if (!clean || postPull.ahead > 0) {
-				await repoGit.push('origin', 'main', ['-u']);
-			}
+			await repoGit.push('origin', 'main', ['-u']);
 		} catch (e) {
 			this.showNotice(e, 'ERROR', 10000);
 			return false;
@@ -184,7 +183,7 @@ export default class GHSyncPlugin extends Plugin {
 		    maxConcurrentProcesses: 6,
 		    trimmed: false,
 		};
-		git = simpleGit(simpleGitOptions);
+		const git = simpleGit(simpleGitOptions);
 
 		let os = require("os");
 		let hostname = os.hostname();
@@ -208,7 +207,7 @@ export default class GHSyncPlugin extends Plugin {
 		if (!clean) {
 			try {
 				await git
-		    		.add("./*")
+					.add(["-A"])
 		    		.commit(msg);
 		    } catch (e) {
 		    	this.showNotice(e, 'ERROR', 10000);
@@ -216,12 +215,15 @@ export default class GHSyncPlugin extends Plugin {
 		    }
 		}
 
-		// configure remote
+		// Preserve upstream tracking when updating the configured URL.
 		try {
-			await git.removeRemote('origin').catch((e) => { this.showNotice(e, 'ERROR', 10000); });
-			await git.addRemote('origin', remote).catch((e) => { this.showNotice(e, 'ERROR', 10000); });
-		}
-		catch (e) {
+			const remotes = await git.getRemotes();
+			if (remotes.some((remote) => remote.name === 'origin')) {
+				await git.remote(['set-url', 'origin', remote]);
+			} else {
+				await git.addRemote('origin', remote);
+			}
+		} catch (e) {
 			this.showNotice(e, 'ERROR', 10000);
 			return false;
 		}
@@ -229,51 +231,38 @@ export default class GHSyncPlugin extends Plugin {
 		try {
 			await git.fetch();
 		} catch (e) {
-			this.showNotice(String(e) + "\nGitHub Sync: Invalid remote URL.", 'ERROR', 10000);
+			this.showNotice(String(e) + "\nGitHub Sync: Fetch failed.", 'ERROR', 10000);
 			return false;
 		}
 
-		// git pull origin main
-	    try {
-	    	//@ts-ignore
-	    	await git.pull('origin', 'main', { '--no-rebase': null }, (err, update) => {
-	   		})
-	    } catch (e) {
-	    	let conflictStatus = await git.status().catch((error) => { this.showNotice(error, 'ERROR', 10000); return; });
-	    	if (!conflictStatus) {
-	    		return false;
-	    	}
-    		let conflictMsg = "Merge conflicts in:";
-	    	//@ts-ignore
-			for (let c of conflictStatus.conflicted)
-			{
-				conflictMsg += "\n\t"+c;
-			}
-			conflictMsg += "\nResolve them or click sync button again to push with unresolved conflicts."
-			this.showNotice(conflictMsg, 'WARNING');
-			//@ts-ignore
-			for (let c of conflictStatus.conflicted)
-			{
-				this.app.workspace.openLinkText("", c, true);
-			}
-	    	return false;
-	    }
+		try {
+			await git.pull('origin', 'main', { '--no-rebase': null });
+		} catch (e) {
+			this.showNotice(e, 'ERROR', 10000);
+			return false;
+		}
 
-		// resolve merge conflicts
-		// git push origin main
-	    if (!clean) {
-		    try {
-		    	await git.push('origin', 'main', ['-u']);
-		    } catch (e) {
-		    	this.showNotice(e, 'ERROR', 10000);
-		    	return false;
-			}
-	    }
+		// Retry already committed changes too; an up-to-date push is harmless.
+		try {
+			await git.push('origin', 'main', ['-u']);
+		} catch (e) {
+			this.showNotice(e, 'ERROR', 10000);
+			return false;
+		}
 
 		return true;
 	}
 
-	async SyncNotes()
+	SyncNotes(): Promise<void> {
+		if (!this.syncInFlight) {
+			this.syncInFlight = this.syncAll().catch((e) => {
+				this.showNotice(e, 'ERROR', 10000);
+			}).finally(() => { this.syncInFlight = null; });
+		}
+		return this.syncInFlight;
+	}
+
+	private async syncAll(): Promise<void>
 	{
 		const vaultOk = await this.SyncVault();
 
@@ -294,42 +283,23 @@ export default class GHSyncPlugin extends Plugin {
 		}
 	}
 
-	async CheckStatusOnStart()
-	{
-		// check status
+	async CheckStatusOnStart() {
 		try {
-			simpleGitOptions = {
+			const git = simpleGit({
 				//@ts-ignore
-			    baseDir: this.app.vault.adapter.getBasePath(),
-			    binary: this.settings.gitLocation + "git",
-			    maxConcurrentProcesses: 6,
-			    trimmed: false,
-			};
-			git = simpleGit(simpleGitOptions);
-
-			//check for remote changes
-			// git branch --set-upstream-to=origin/main main
-			await git.branch({'--set-upstream-to': 'origin/main'});
-			let statusUponOpening = await git.fetch().status();
-			if (statusUponOpening.behind > 0)
-			{
-				// Automatically sync if needed
-				if (this.settings.isSyncOnLoad == true)
-				{
-					this.SyncNotes();
-				}
-				else
-				{
-					this.showNotice("GitHub Sync: " + statusUponOpening.behind + " commits behind remote.\nClick the GitHub ribbon icon to sync.", 'WARNING');
-				}
-			}
-			else
-			{
-				this.showNotice("GitHub Sync: up to date with remote.", 'INFO');
+				baseDir: this.app.vault.adapter.getBasePath(),
+				binary: this.settings.gitLocation + 'git',
+			});
+			await git.fetch('origin');
+			const counts = (await git.raw(['rev-list', '--left-right', '--count', 'HEAD...refs/remotes/origin/main'])).trim().split(/\s+/).map(Number);
+			const status = await git.status();
+			if (counts[0] > 0 || counts[1] > 0 || !status.isClean()) {
+				this.showNotice(`GitHub Sync: ${counts[0]} commits ahead, ${counts[1]} behind; ${status.isClean() ? 'working tree clean' : 'uncommitted changes'}. Click sync to synchronize all repositories.`, 'WARNING');
+			} else {
+				this.showNotice('GitHub Sync: vault up to date with remote.', 'INFO');
 			}
 		} catch (e) {
-			// don't care
-			// based
+			this.showNotice(e, 'ERROR', 10000);
 		}
 	}
 
@@ -358,7 +328,7 @@ export default class GHSyncPlugin extends Plugin {
 			if (interval >= 1)
 			{
 				try {
-					setIntervalAsync(async () => {
+					this.syncTimer = setIntervalAsync(async () => {
 						await this.SyncNotes();
 					}, interval * 60 * 1000);
 					//this.registerInterval(setInterval(this.SyncNotes, interval * 6 * 1000));
@@ -369,14 +339,18 @@ export default class GHSyncPlugin extends Plugin {
 			}
 		}
 
-		if (this.settings.checkStatusOnLoad)
-		{
-			this.CheckStatusOnStart();
+		if (this.settings.isSyncOnLoad) {
+			await this.SyncNotes();
+		} else if (this.settings.checkStatusOnLoad) {
+			await this.CheckStatusOnStart();
 		}
 	}
 
 	onunload() {
-
+		if (this.syncTimer) {
+			void clearIntervalAsync(this.syncTimer);
+			this.syncTimer = null;
+		}
 	}
 
 	async loadSettings() {
@@ -475,7 +449,7 @@ class GHSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Check status on startup')
-			.setDesc('Check to see if you are behind remote when you start Obsidian.')
+			.setDesc('Check the vault for unpushed commits, remote commits, and uncommitted changes on startup.')
 			.addToggle((toggle) => toggle
 				.setValue(this.plugin.settings.checkStatusOnLoad)
 				.onChange(async (value) => {
@@ -485,7 +459,7 @@ class GHSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Auto sync on startup')
-			.setDesc('Automatically sync with remote when you start Obsidian if there are unsynced changes.')
+			.setDesc('Sync the vault and all additional repositories when Obsidian starts.')
 			.addToggle((toggle) => toggle
 				.setValue(this.plugin.settings.isSyncOnLoad)
 				.onChange(async (value) => {
